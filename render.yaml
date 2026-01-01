@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: bubbly-backend
+    env: node
+    plan: free
+    region: oregon
+    root: backend
+    buildCommand: npm run build
+    startCommand: npm start
+    envVars:
+      - key: MONGODB_URI
+        value: ""
+      - key: JWT_SECRET
+        value: ""
+      - key: CLOUDINARY_CLOUD_NAME
+        value: ""
+      - key: CLOUDINARY_API_KEY
+        value: ""
+      - key: CLOUDINARY_API_SECRET
+        value: ""
+      - key: NODE_ENV
+        value: production
