@@ -21,6 +21,14 @@ const messageSchema = new Schema<MessageProps>(
         ref: "User",
       },
     ],
+    deletedFor: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
+    isDeleted: { type: Boolean, default: false },
+    deletedAt: { type: Date },
   },
   { timestamps: true }
 );

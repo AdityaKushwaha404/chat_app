@@ -272,6 +272,89 @@ export async function registerUserEvent(socket: Socket, io: SocketIOServer) {
     }
   });
 
+  // Delete messages (for me or for everyone)
+  socket.on(
+    "message:delete",
+    async (
+      payload: { conversationId: string; messageIds: string[]; scope?: "me" | "everyone" },
+      cb?: (res: any) => void
+    ) => {
+      const currentUserId = socket.data.userId as string;
+      if (!currentUserId) {
+        const resp = { success: false, msg: "Unauthorized" };
+        if (typeof cb === "function") cb(resp);
+        return;
+      }
+      try {
+        const { conversationId, messageIds = [], scope = "me" } = payload || {};
+        if (!conversationId || !Array.isArray(messageIds) || messageIds.length === 0) {
+          if (typeof cb === "function") cb({ success: false, msg: "Invalid payload" });
+          return;
+        }
+
+        if (scope === "me") {
+          const res = await Message.updateMany(
+            { _id: { $in: messageIds }, conversationId },
+            { $addToSet: { deletedFor: currentUserId } }
+          );
+          // notify all devices in room; clients filter by userId
+          io.to(`conversation:${conversationId}`).emit("message:deleted", { conversationId, messageIds, scope, userId: currentUserId });
+          if (typeof cb === "function") cb({ success: true, updated: (res as any)?.modifiedCount || 0 });
+        } else {
+          // only allow sender to delete for everyone
+          const msgs = await Message.find({ _id: { $in: messageIds }, conversationId, senderId: currentUserId }, { _id: 1, createdAt: 1 }).lean();
+          const now = Date.now();
+          const allowedIds = msgs
+            .filter((m: any) => {
+              const ts = new Date(m.createdAt).getTime();
+              return now - ts <= 2 * 60 * 1000; // 2 minutes limit
+            })
+            .map((m: any) => m._id.toString());
+          if (allowedIds.length === 0) {
+            if (typeof cb === "function") cb({ success: false, msg: "Not allowed or time limit exceeded" });
+            return;
+          }
+          await Message.updateMany(
+            { _id: { $in: allowedIds }, conversationId },
+            { $set: { isDeleted: true, deletedAt: new Date(), content: null, attachment: null } }
+          );
+          io.to(`conversation:${conversationId}`).emit("message:deleted", { conversationId, messageIds: allowedIds, scope, userId: currentUserId });
+          if (typeof cb === "function") cb({ success: true, updated: allowedIds.length });
+        }
+      } catch (e) {
+        if (typeof cb === "function") cb({ success: false });
+      }
+    }
+  );
+
+  // Undo delete-for-me (remove current user from deletedFor)
+  socket.on(
+    "message:undelete",
+    async (payload: { conversationId: string; messageIds: string[] }, cb?: (res: any) => void) => {
+      const currentUserId = socket.data.userId as string;
+      if (!currentUserId) {
+        const resp = { success: false, msg: "Unauthorized" };
+        if (typeof cb === "function") cb(resp);
+        return;
+      }
+      try {
+        const { conversationId, messageIds = [] } = payload || {};
+        if (!conversationId || !Array.isArray(messageIds) || messageIds.length === 0) {
+          if (typeof cb === "function") cb({ success: false, msg: "Invalid payload" });
+          return;
+        }
+        const res = await Message.updateMany(
+          { _id: { $in: messageIds }, conversationId },
+          { $pull: { deletedFor: currentUserId } }
+        );
+        io.to(`conversation:${conversationId}`).emit("message:undeleted", { conversationId, messageIds, userId: currentUserId });
+        if (typeof cb === "function") cb({ success: true, updated: (res as any)?.modifiedCount || 0 });
+      } catch (e) {
+        if (typeof cb === "function") cb({ success: false });
+      }
+    }
+  );
+
   // Handle disconnect
   socket.on("disconnect", (reason) => {
     socket.broadcast.emit("user:offline", { userId, name, reason });

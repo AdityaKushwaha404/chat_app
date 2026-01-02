@@ -26,6 +26,9 @@ export interface MessageProps extends Document {
   content?: string;
   attachment?: string;
   readBy?: Types.ObjectId[];
+  deletedFor?: Types.ObjectId[];
+  isDeleted?: boolean;
+  deletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
