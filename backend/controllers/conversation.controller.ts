@@ -1,5 +1,7 @@
 import { Request, Response } from "express";
 import Conversation from "../modals/Conversation.js";
+import Message from "../modals/Message.js";
+import mongoose from "mongoose";
 
 export const createConversation = async (req: Request & { user?: any }, res: Response) => {
   try {
@@ -50,9 +52,21 @@ export const listMyConversations = async (req: Request & { user?: any }, res: Re
       .sort({ updatedAt: -1 })
       .lean();
 
+    // Aggregate unread counts for all conversations in one query for performance
+    const convIds = convs.map((c: any) => c._id);
+    const userObjId = new mongoose.Types.ObjectId(currentUserId);
+    const counts = await Message.aggregate([
+      { $match: { conversationId: { $in: convIds }, senderId: { $ne: userObjId }, readBy: { $ne: userObjId } } },
+      { $group: { _id: "$conversationId", unreadCount: { $sum: 1 } } },
+    ]);
+    const countsMap: Record<string, number> = {};
+    counts.forEach((c: any) => {
+      countsMap[c._id?.toString?.() || c._id] = c.unreadCount || 0;
+    });
+
     const mapped = convs.map((c: any) => {
       const last = c.lastMessage
-        ? { content: c.lastMessage.content || "", createdAt: c.lastMessage.createdAt?.toISOString?.() || c.lastMessage.createdAt }
+        ? { content: c.lastMessage.content || "", createdAt: c.lastMessage.createdAt?.toISOString?.() || c.lastMessage.createdAt, readBy: c.lastMessage.readBy || [] }
         : null;
       let name = c.name || "";
       let avatar = c.avatar || "";
@@ -69,6 +83,7 @@ export const listMyConversations = async (req: Request & { user?: any }, res: Re
         name,
         avatar,
         lastMessage: last,
+        unreadCount: countsMap[c._id.toString()] || 0,
       };
     });
 
