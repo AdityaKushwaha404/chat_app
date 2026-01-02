@@ -148,6 +148,41 @@ export async function registerUserEvent(socket, io) {
         const { conversationId } = payload || {};
         socket.to(`conversation:${conversationId}`).emit("stop_typing", { userId });
     });
+    // Subscribe to conversation room without fetching data
+    socket.on("conversation:subscribe", async (payload, cb) => {
+        try {
+            const { conversationId } = payload || {};
+            if (!conversationId) {
+                if (typeof cb === "function")
+                    cb({ success: false, msg: "Missing conversationId" });
+                return;
+            }
+            socket.join(`conversation:${conversationId}`);
+            if (typeof cb === "function")
+                cb({ success: true });
+        }
+        catch (e) {
+            if (typeof cb === "function")
+                cb({ success: false });
+        }
+    });
+    socket.on("conversation:unsubscribe", async (payload, cb) => {
+        try {
+            const { conversationId } = payload || {};
+            if (!conversationId) {
+                if (typeof cb === "function")
+                    cb({ success: false, msg: "Missing conversationId" });
+                return;
+            }
+            socket.leave(`conversation:${conversationId}`);
+            if (typeof cb === "function")
+                cb({ success: true });
+        }
+        catch (e) {
+            if (typeof cb === "function")
+                cb({ success: false });
+        }
+    });
     // Send message
     socket.on("sendMessage", async (payload, cb) => {
         const currentUserId = socket.data.userId;
@@ -201,6 +236,33 @@ export async function registerUserEvent(socket, io) {
             io.to(`conversation:${conversationId}`).emit("message:read", { messageId, userId: currentUserId });
             if (typeof cb === "function")
                 cb({ success: true });
+        }
+        catch (e) {
+            if (typeof cb === "function")
+                cb({ success: false });
+        }
+    });
+    // Mark all messages in a conversation as read for current user
+    socket.on("conversation:markRead", async (payload, cb) => {
+        const currentUserId = socket.data.userId;
+        if (!currentUserId) {
+            const resp = { success: false, msg: "Unauthorized" };
+            if (typeof cb === "function")
+                cb(resp);
+            return;
+        }
+        try {
+            const { conversationId } = payload || {};
+            if (!conversationId) {
+                if (typeof cb === "function")
+                    cb({ success: false, msg: "Missing conversationId" });
+                return;
+            }
+            const res = await Message.updateMany({ conversationId, senderId: { $ne: currentUserId }, readBy: { $ne: currentUserId } }, { $addToSet: { readBy: currentUserId } });
+            // notify participants in the room (optional)
+            io.to(`conversation:${conversationId}`).emit("conversation:read", { conversationId, userId: currentUserId });
+            if (typeof cb === "function")
+                cb({ success: true, updated: res?.modifiedCount || res?.nModified || 0 });
         }
         catch (e) {
             if (typeof cb === "function")
