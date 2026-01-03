@@ -24,6 +24,22 @@ const ConversationSchema = new Schema<ConversationProps>(
       type: String,
       default: "",
     },
+    createdBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
+    admins: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
+    moderators: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
     createdAt: {
       type: Date,
       default: Date.now,

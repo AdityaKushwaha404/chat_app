@@ -6,6 +6,17 @@ import { verifyToken } from "./utils/token.js";
 
 dotenv.config();
 
+let ioInstance: SocketIOServer | null = null;
+const presence = new Map<string, number>(); // userId -> connection count
+
+export function getIO(): SocketIOServer | null {
+  return ioInstance;
+}
+
+export function isUserOnline(userId: string): boolean {
+  return (presence.get(userId) || 0) > 0;
+}
+
 export function initializeSocket(server: http.Server) {
   const io = new SocketIOServer(server, {
     cors: {
@@ -39,12 +50,23 @@ export function initializeSocket(server: http.Server) {
 
   io.on("connection", (socket: Socket) => {
     try {
+      const uid = (socket as any).data?.userId as string | undefined;
+      if (uid) presence.set(uid, (presence.get(uid) || 0) + 1);
       registerUserEvent(socket, io);
     } catch (err) {
       console.error("Socket connection error:", err);
     }
+    socket.on("disconnect", () => {
+      const uid = (socket as any).data?.userId as string | undefined;
+      if (uid) {
+        const n = (presence.get(uid) || 1) - 1;
+        if (n <= 0) presence.delete(uid);
+        else presence.set(uid, n);
+      }
+    });
   });
 
+  ioInstance = io;
   return io;
 }
 

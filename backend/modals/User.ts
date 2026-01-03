@@ -25,6 +25,10 @@ const UserSchema = new Schema<UserProps>({
     type: Date,
     default: Date.now,
   },
+  fcmTokens: {
+    type: [String],
+    default: [],
+  },
 });
 
 export default model<UserProps>("User", UserSchema);

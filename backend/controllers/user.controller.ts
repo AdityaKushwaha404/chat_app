@@ -33,3 +33,34 @@ export const getUser = async (req: Request, res: Response) => {
 };
 
 export default { listUsers, getUser };
+
+export const savePushToken = async (req: Request & { user?: any }, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { token } = (req.body || {}) as { token?: string };
+    if (!userId) return res.status(401).json({ success: false, msg: 'Unauthorized' });
+    if (!token) return res.status(400).json({ success: false, msg: 'Missing token' });
+    const updated = await User.findByIdAndUpdate(userId, { $addToSet: { fcmTokens: token } }, { new: true }).lean();
+    return res.json({ success: true, tokens: updated?.fcmTokens || [] });
+  } catch (err) {
+    console.error('savePushToken error', err);
+    res.status(500).json({ success: false, msg: 'Server error' });
+  }
+};
+ 
+// Register or remove device FCM token for current user
+export const registerFcmToken = async (req: Request & { user?: any }, res: Response) => {
+  try {
+    const currentUserId = req.user?.id;
+    const { token, action } = req.body || {};
+    if (!currentUserId || !token) return res.status(400).json({ success: false, msg: 'Missing token or user' });
+    const update: any = {};
+    if (action === 'remove') update.$pull = { fcmTokens: token };
+    else update.$addToSet = { fcmTokens: token };
+    await User.findByIdAndUpdate(currentUserId, update, { new: true });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('registerFcmToken error', err);
+    res.status(500).json({ success: false, msg: 'Server error' });
+  }
+};

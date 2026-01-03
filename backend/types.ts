@@ -6,6 +6,7 @@ export interface UserProps extends Document {
   name?: string;
   avatar?: string;
   created?: Date;
+  fcmTokens?: string[];
 }
 
 export interface ConversationProps extends Document {
@@ -16,6 +17,8 @@ export interface ConversationProps extends Document {
   lastMessage?: Types.ObjectId;
   createdBy?: Types.ObjectId;
   avatar?: string;
+  admins?: Types.ObjectId[];
+  moderators?: Types.ObjectId[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,6 +32,9 @@ export interface MessageProps extends Document {
   deletedFor?: Types.ObjectId[];
   isDeleted?: boolean;
   deletedAt?: Date;
+  replyTo?: Types.ObjectId | null;
+  forwardedFromUser?: Types.ObjectId | null;
+  forwardedFromChatId?: Types.ObjectId | null;
   createdAt: Date;
   updatedAt: Date;
 }

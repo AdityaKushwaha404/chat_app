@@ -32,6 +32,7 @@ export const createConversation = async (req: Request & { user?: any }, res: Res
       participants,
       avatar: payload.avatar || "",
       createdBy: currentUserId || undefined,
+      admins: currentUserId ? [currentUserId] : [],
     } as any);
 
     return res.json({ success: true, data: conv });
@@ -95,3 +96,103 @@ export const listMyConversations = async (req: Request & { user?: any }, res: Re
 };
 
 export default { createConversation, listMyConversations };
+
+export const getConversation = async (req: Request & { user?: any }, res: Response) => {
+  try {
+    const id = req.params.id;
+    if (!id) return res.status(400).json({ success: false, msg: "Missing id" });
+    const conv = await Conversation.findById(id)
+      .populate({ path: "participants", select: "name avatar email" })
+      .populate({ path: "createdBy", select: "name _id" })
+      .lean();
+    if (!conv) return res.status(404).json({ success: false, msg: "Conversation not found" });
+    // include admins/moderators arrays for role-aware UI
+    const data = { ...conv, admins: (conv as any).admins || [], moderators: (conv as any).moderators || [] } as any;
+    return res.json({ success: true, data });
+  } catch (err) {
+    console.error("getConversation error", err);
+    res.status(500).json({ success: false, msg: "Server error" });
+  }
+};
+
+export const updateConversation = async (req: Request & { user?: any }, res: Response) => {
+  try {
+    const id = req.params.id;
+    const payload = req.body || {};
+    const currentUserId = req.user?.id;
+    if (!id) return res.status(400).json({ success: false, msg: "Missing id" });
+    const conv: any = await Conversation.findById(id);
+    if (!conv) return res.status(404).json({ success: false, msg: "Conversation not found" });
+    // only creator or admins can update group meta
+    const isAdmin = conv.admins && Array.isArray(conv.admins) && currentUserId && conv.admins.map((a: any) => a.toString()).includes(currentUserId.toString());
+    const isCreator = conv.createdBy && currentUserId && conv.createdBy.toString() === currentUserId.toString();
+    if (conv.type === "group" && !isCreator && !isAdmin) {
+      return res.status(403).json({ success: false, msg: "Not allowed" });
+    }
+    if (payload.name) conv.name = payload.name;
+    if (payload.avatar) conv.avatar = payload.avatar;
+    await conv.save();
+    const updated = await Conversation.findById(id).populate({ path: "participants", select: "name avatar email" }).populate({ path: "createdBy", select: "name _id" }).lean();
+    return res.json({ success: true, data: updated });
+  } catch (err) {
+    console.error("updateConversation error", err);
+    res.status(500).json({ success: false, msg: "Server error" });
+  }
+};
+
+import User from "../modals/User.js";
+export const addMembers = async (req: Request & { user?: any }, res: Response) => {
+  try {
+    const id = req.params.id;
+    const { members, emails } = req.body || {};
+    const currentUserId = req.user?.id;
+    if (!id) return res.status(400).json({ success: false, msg: "Missing id" });
+    const conv: any = await Conversation.findById(id);
+    if (!conv) return res.status(404).json({ success: false, msg: "Conversation not found" });
+    // only group allowed
+    if (conv.type !== "group") return res.status(400).json({ success: false, msg: "Cannot add members to direct conversation" });
+
+    // only creator or admins can add members
+    const isAdmin = conv.admins && Array.isArray(conv.admins) && currentUserId && conv.admins.map((a: any) => a.toString()).includes(currentUserId.toString());
+    const isCreator = conv.createdBy && currentUserId && conv.createdBy.toString() === currentUserId.toString();
+    if (!isCreator && !isAdmin) {
+      return res.status(403).json({ success: false, msg: "Not allowed" });
+    }
+
+    const toAdd: string[] = Array.isArray(members) ? members.slice() : [];
+    if (Array.isArray(emails) && emails.length > 0) {
+      // resolve emails to user ids where possible
+      const users = await User.find({ email: { $in: emails.map((e: string) => (e || "").toLowerCase().trim()) } }).lean();
+      users.forEach((u: any) => toAdd.push(u._id.toString()));
+    }
+
+    // merge unique
+    const existing = (conv.participants || []).map((p: any) => p.toString());
+    const merged = Array.from(new Set([...existing, ...toAdd]));
+
+    const before = existing.slice();
+    conv.participants = merged;
+    await conv.save();
+    const updated = await Conversation.findById(id).populate({ path: "participants", select: "name avatar email" }).populate({ path: "createdBy", select: "name _id" }).lean();
+
+    // notify via sockets
+    try {
+      const socketModule = require('../socket');
+      const io = socketModule && socketModule.getIO ? socketModule.getIO() : null;
+      const added = merged.filter((m: any) => !before.includes(m));
+      if (io) {
+        io.to(`conversation:${id}`).emit('conversation:members:added', { conversationId: id, added });
+        added.forEach((uid: string) => {
+          io.to(`user:${uid}`).emit('invited:conversation', { conversationId: id, conversation: updated });
+        });
+      }
+    } catch (e) {
+      console.warn('Failed to emit socket notifications on addMembers', e);
+    }
+
+    return res.json({ success: true, data: updated });
+  } catch (err) {
+    console.error("addMembers error", err);
+    res.status(500).json({ success: false, msg: "Server error" });
+  }
+};

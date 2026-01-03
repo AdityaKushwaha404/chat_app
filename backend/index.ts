@@ -6,7 +6,9 @@ import connectDB from "./config/db.js";
 import authRoutes from "./routes/auth.routes.js";
 import usersRoutes from "./routes/users.routes.js";
 import conversationsRoutes from "./routes/conversations.routes.js";
+import keepAliveRoutes from "./routes/keepAlive.routes.js";
 import { initializeSocket } from "./socket.js";
+import { scheduleKeepAlive } from "./utils/keepAlive.js";
 
 dotenv.config();
 
@@ -36,6 +38,14 @@ connectDB().then(() => {
     console.warn("Failed to initialize socket server:", err);
   }
 
+  // Schedule keep-alive ping job to keep MongoDB Atlas from sleeping
+  try {
+    const endpoint = process.env.KEEP_ALIVE_ENDPOINT || `http://localhost:${PORT}/api/keep-alive`;
+    scheduleKeepAlive(endpoint);
+  } catch (err) {
+    console.warn("Failed to schedule keep-alive job:", err);
+  }
+
 });
 }).catch((error) => {
     console.error("Failed to connect to the database:", error);
@@ -44,6 +54,9 @@ connectDB().then(() => {
 
 // Mount auth routes
 app.use('/api/auth', authRoutes);
+
+// Mount keep-alive route (simple DB ping)
+app.use('/api/keep-alive', keepAliveRoutes);
 
 // Mount users and conversations
 app.use('/api/users', usersRoutes);

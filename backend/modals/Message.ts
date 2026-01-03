@@ -15,6 +15,23 @@ const messageSchema = new Schema<MessageProps>(
     },
     content: String,
     attachment: String,
+    // Optional reply reference (quoted message)
+    replyTo: {
+      type: Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+    },
+    // Forward metadata
+    forwardedFromUser: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    forwardedFromChatId: {
+      type: Schema.Types.ObjectId,
+      ref: "Conversation",
+      default: null,
+    },
     readBy: [
       {
         type: Schema.Types.ObjectId,

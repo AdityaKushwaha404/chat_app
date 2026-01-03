@@ -4,6 +4,8 @@ import User from "../modals/User.js";
 import Message from "../modals/Message.js";
 import Conversation from "../modals/Conversation.js";
 import { signToken } from "../utils/token.js";
+import { isUserOnline } from "../socket.js";
+import { sendFcmToTokens, shouldSend } from "../utils/push.js";
 
 export async function registerUserEvent(socket: Socket, io: SocketIOServer) {
   const userId = socket.data.userId as string;
@@ -190,7 +192,7 @@ export async function registerUserEvent(socket: Socket, io: SocketIOServer) {
   });
 
   // Send message
-  socket.on("sendMessage", async (payload: { conversationId: string; content?: string; attachment?: string; clientId?: string }, cb?: (res: any) => void) => {
+  socket.on("sendMessage", async (payload: { conversationId: string; content?: string; attachment?: string; clientId?: string; replyTo?: string | null }, cb?: (res: any) => void) => {
     const currentUserId = socket.data.userId as string;
     if (!currentUserId) {
       const resp = { success: false, msg: "Unauthorized" };
@@ -199,24 +201,63 @@ export async function registerUserEvent(socket: Socket, io: SocketIOServer) {
     }
 
     try {
-      const { conversationId, content, attachment, clientId } = payload || {};
-      const message = await Message.create({ conversationId, senderId: currentUserId, content, attachment } as any);
+      const { conversationId, content, attachment, clientId, replyTo } = payload || {};
+      const message = await Message.create({ conversationId, senderId: currentUserId, content, attachment, replyTo: replyTo || null } as any);
 
       // update conversation lastMessage
       await Conversation.findByIdAndUpdate(conversationId, { lastMessage: message._id, updatedAt: new Date() });
 
       // enrich message with sender info
       const sender = await User.findById(currentUserId, { name: 1, avatar: 1 }).lean();
+      let replyPreview: any = null;
+      if (replyTo) {
+        const ref = await Message.findById(replyTo).lean();
+        if (ref) {
+          const refSender = await User.findById(ref.senderId, { name: 1 }).lean();
+          replyPreview = {
+            _id: ref._id.toString(),
+            content: ref.content || null,
+            attachment: ref.attachment || null,
+            senderName: refSender?.name || null,
+          };
+        }
+      }
       const populated = {
         ...message.toObject(),
         senderId: currentUserId,
         senderName: sender?.name || null,
         senderAvatar: sender?.avatar || null,
         clientId: clientId || undefined,
+        replyPreview,
       };
 
       // emit to all participants in the conversation room
       io.to(`conversation:${conversationId}`).emit("message:new", populated);
+
+      // Push notifications: send to offline participants
+      try {
+        const conv = await Conversation.findById(conversationId, { participants: 1 }).lean();
+        if (conv && Array.isArray((conv as any).participants)) {
+          for (const pid of (conv as any).participants) {
+            const uid = pid.toString();
+            if (uid === currentUserId) continue;
+            if (isUserOnline(uid)) continue;
+            const u = await User.findById(uid, { fcmTokens: 1 }).lean();
+            const tokens = (u?.fcmTokens || []).filter(Boolean);
+            if (tokens.length === 0) continue;
+            if (!shouldSend(uid, message._id.toString())) continue;
+            const preview = content ? content : (attachment ? 'Sent a photo' : 'New message');
+            await sendFcmToTokens(tokens, {
+              title: sender?.name || 'New message',
+              body: preview,
+              data: { conversationId: conversationId.toString(), messageId: message._id.toString() },
+              collapseKey: message._id.toString(),
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('Push notification send failed', e);
+      }
 
       const resp = { success: true, data: populated };
       if (typeof cb === "function") cb(resp);
@@ -226,6 +267,77 @@ export async function registerUserEvent(socket: Socket, io: SocketIOServer) {
       if (typeof cb === "function") cb(resp);
     }
   });
+
+  // Forward message to another conversation
+  socket.on(
+    "message:forward",
+    async (payload: { sourceMessageId: string; targetConversationId: string }, cb?: (res: any) => void) => {
+      const currentUserId = socket.data.userId as string;
+      if (!currentUserId) {
+        const resp = { success: false, msg: "Unauthorized" };
+        if (typeof cb === "function") cb(resp);
+        return;
+      }
+      try {
+        const { sourceMessageId, targetConversationId } = payload || {};
+        const src = await Message.findById(sourceMessageId).lean();
+        if (!src) {
+          if (typeof cb === "function") cb({ success: false, msg: "Source message not found" });
+          return;
+        }
+        // create new message in target conversation
+        const fwd = await Message.create({
+          conversationId: targetConversationId,
+          senderId: currentUserId,
+          content: src.content,
+          attachment: src.attachment,
+          forwardedFromUser: src.senderId,
+          forwardedFromChatId: src.conversationId,
+        } as any);
+
+        await Conversation.findByIdAndUpdate(targetConversationId, { lastMessage: fwd._id, updatedAt: new Date() });
+
+        const sender = await User.findById(currentUserId, { name: 1, avatar: 1 }).lean();
+        const origSender = await User.findById(src.senderId, { name: 1 }).lean();
+        const populated = {
+          ...fwd.toObject(),
+          senderId: currentUserId,
+          senderName: sender?.name || null,
+          senderAvatar: sender?.avatar || null,
+          forwardedFromUserName: origSender?.name || null,
+        };
+        io.to(`conversation:${targetConversationId}`).emit("message:new", populated);
+        if (typeof cb === "function") cb({ success: true, data: populated });
+
+        // Push to offline participants of target conversation
+        try {
+          const conv = await Conversation.findById(targetConversationId, { participants: 1 }).lean();
+          if (conv && Array.isArray((conv as any).participants)) {
+            for (const pid of (conv as any).participants) {
+              const uid = pid.toString();
+              if (uid === currentUserId) continue;
+              if (isUserOnline(uid)) continue;
+              const u = await User.findById(uid, { fcmTokens: 1 }).lean();
+              const tokens = (u?.fcmTokens || []).filter(Boolean);
+              if (tokens.length === 0) continue;
+              if (!shouldSend(uid, fwd._id.toString())) continue;
+              const preview = populated.attachment ? 'Sent a photo' : (populated.content || 'New message');
+              await sendFcmToTokens(tokens, {
+                title: sender?.name || 'New message',
+                body: preview,
+                data: { conversationId: targetConversationId.toString(), messageId: fwd._id.toString() },
+                collapseKey: fwd._id.toString(),
+              });
+            }
+          }
+        } catch (e) {
+          console.warn('Push notification send failed (forward)', e);
+        }
+      } catch (e) {
+        if (typeof cb === "function") cb({ success: false, msg: "Failed to forward" });
+      }
+    }
+  );
 
   // Mark message as read
   socket.on("message:read", async (payload: { conversationId: string; messageId: string }, cb?: (res: any) => void) => {
